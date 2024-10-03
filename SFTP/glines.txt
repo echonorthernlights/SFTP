@@ -1,0 +1,159 @@
+﻿
+1. Project Setup
+a. Create a .NET Core Web API Project
+Open Visual Studio and create a new project.
+Select ASP.NET Core Web API and click Next.
+Configure your project and click Create.
+b. Install Required Packages
+Open the NuGet Package Manager.
+Install the SSH.NET package:
+Install-Package SSH.NET
+
+2. Setting Up FileZilla Server for FTPS (Optional)
+a. Install FileZilla Server
+Download and install FileZilla Server from the official website.
+b. Create a Certificate for FTPS
+Open a command prompt and navigate to the desired directory.
+Generate a self-signed certificate:
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout ftps_server_key.pem -out ftps_server_cert.pem
+
+c. Configure FileZilla Server
+Open FileZilla Server Interface.
+Go to Edit > Settings > SSL/TLS settings.
+Enable FTP over TLS and add the paths to your certificate and key files.
+3. Setting Up an SFTP Server with OpenSSH
+a. Install OpenSSH
+Open Settings > Apps > Optional Features.
+Click on Add a feature.
+Find and install OpenSSH Server.
+b. Generate SSH Keys
+Open a command prompt and navigate to the folder where you want to store your keys.
+Generate a private key:
+ssh-keygen -t rsa -b 4096 -f sftp_server_key
+
+c. Configure OpenSSH
+Open the sshd_config file located in C:\ProgramData\ssh\.
+Add or modify the following line to enable SFTP:
+Subsystem sftp sftp-server.exe
+
+Restart the OpenSSH server:
+net stop sshd
+net start sshd
+
+d. Add Public Key to Authorized Keys
+Copy the contents of sftp_server_key.pub to the authorized_keys file in the .ssh directory of the user you want to use for SFTP.
+4. Configuring Your .NET Application for SFTP
+a. Define Configuration Settings
+Update your controller with the necessary configuration settings:
+
+C#
+
+private readonly string _localFolderPath = @"C:\\Users\\elhas\\Desktop\\src";
+private readonly string _remoteFolderPath = "/shared";
+private readonly string _host = "127.0.0.1";
+private readonly int _port = 22; // Default port for SFTP
+private readonly string _username = "sftpuser";
+private readonly string _privateKeyPath = @"C:\path\to\your\private\key\sftp_server_key";
+AI-generated code. Review and use carefully. More info on FAQ.
+b. Implement SFTP File Upload
+Here’s the complete implementation of your SFTP file upload controller:
+
+C#
+
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+using Renci.SshNet;
+using System.IO;
+using System.Net.Sockets;
+using System.Threading.Tasks;
+
+namespace YourNamespace.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class SFTPController : ControllerBase
+    {
+        private readonly string _localFolderPath = @"C:\\Users\\elhas\\Desktop\\src";
+        private readonly string _remoteFolderPath = "/shared";
+        private readonly string _host = "127.0.0.1";
+        private readonly int _port = 22; // Default port for SFTP
+        private readonly string _username = "sftpuser";
+        private readonly string _privateKeyPath = @"C:\path\to\your\private\key\sftp_server_key";
+        private readonly ILogger<SFTPController> _logger;
+
+        public SFTPController(ILogger<SFTPController> logger)
+        {
+            _logger = logger;
+        }
+
+        [HttpPost("send")]
+        public async Task<IActionResult> SendFiles()
+        {
+            var files = Directory.GetFiles(_localFolderPath);
+            int maxRetries = 3;
+            int retryDelay = 2000; // 2 seconds
+
+            foreach (var file in files)
+            {
+                bool success = false;
+                for (int attempt = 1; attempt <= maxRetries; attempt++)
+                {
+                    try
+                    {
+                        var keyFile = new PrivateKeyFile(_privateKeyPath);
+                        var keyFiles = new[] { keyFile };
+                        var connectionInfo = new ConnectionInfo(_host, _port, _username, new PrivateKeyAuthenticationMethod(_username, keyFiles));
+
+                        using (var sftp = new SftpClient(connectionInfo))
+                        {
+                            _logger.LogInformation("Attempting to connect to SFTP server at {Host}:{Port}", _host, _port);
+                            sftp.ConnectionInfo.Timeout = TimeSpan.FromMinutes(2); // Set a reasonable timeout
+                            sftp.Connect();
+                            _logger.LogInformation("Connected to SFTP server.");
+
+                            using (var fileStream = new FileStream(file, FileMode.Open))
+                            {
+                                var remoteFileName = Path.Combine(_remoteFolderPath, Path.GetFileName(file)).Replace("\\", "/");
+                                sftp.UploadFile(fileStream, remoteFileName);
+                                _logger.LogInformation("Uploaded file: {File} to {RemoteFileName}", file, remoteFileName);
+                            }
+
+                            sftp.Disconnect();
+                            _logger.LogInformation("Disconnected from SFTP server.");
+                            success = true;
+                            break;
+                        }
+                    }
+                    catch (SocketException ex)
+                    {
+                        _logger.LogError(ex, "SocketException: An existing connection was forcibly closed by the remote host. Attempt {Attempt} of {MaxRetries}", attempt, maxRetries);
+                        if (attempt < maxRetries)
+                        {
+                            await Task.Delay(retryDelay);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "An error occurred while uploading the file: {Message}. Attempt {Attempt} of {MaxRetries}", ex.Message, attempt, maxRetries);
+                        if (attempt < maxRetries)
+                        {
+                            await Task.Delay(retryDelay);
+                        }
+                    }
+                }
+
+                if (!success)
+                {
+                    return StatusCode(500, $"Failed to upload file: {file} after {maxRetries} attempts.");
+                }
+            }
+
+            return Ok("Files sent to remote server.");
+        }
+    }
+}
+AI-generated code. Review and use carefully. More info on FAQ.
+Additional Tips
+Verify SFTP Configuration: Ensure that your SFTP server is correctly configured and accessible.
+Check Server Logs: Review the OpenSSH server logs for any errors or warnings.
+Test with SFTP Client: Use an SFTP client like FileZilla or WinSCP to manually connect to the server and verify the setup.
